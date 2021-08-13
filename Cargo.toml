@@ -1,5 +1,7 @@
 [package]
 name = "net_sync"
+description = "a pure-rust asynchronous network synchronization crate (using tokio) that recreates familiar asynchronous paradigms but in a network context"
+license-file= "LICENSE"
 version = "0.1.0"
 edition = "2018"
 
