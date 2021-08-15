@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
 
+pub mod operations;
+pub mod primitives;
+pub mod subscription;
+
 pub mod network_endpoint;
-pub mod net_try_join;
-pub mod net_join;
-pub mod net_select_ok;
-pub mod net_select;
 pub mod sync_start;
 
 #[derive(Serialize, Deserialize, Eq, PartialEq, Hash, Debug, Copy, Clone)]
@@ -26,13 +26,12 @@ pub mod test_utils {
     use futures::stream::{SplitSink, SplitStream};
     use tokio::net::{TcpListener, TcpStream};
     use tokio::sync::Mutex;
-
     use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
     use crate::reliable_conn::ReliableOrderedConnectionToTarget;
+    use crate::reliable_conn::simulator::NetworkConnSimulator;
     use crate::sync::network_endpoint::NetworkEndpoint;
     use crate::sync::RelativeNodeType;
-    use crate::reliable_conn::simulator::NetworkConnSimulator;
 
     pub struct TcpCodecFramed {
         sink: Mutex<SplitSink<Framed<TcpStream, LengthDelimitedCodec>, Bytes>>,

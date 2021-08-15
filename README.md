@@ -1,4 +1,4 @@
-#net_sync
+# net_sync
 This is a pure-rust asynchronous network synchronization crate (using tokio) that recreates familiar asynchronous paradigms but in a network context.
 
 Let `A` and `B` be two nodes with a pre-established ordered+reliable connection to each other (e.g., over TCP, TLS, QUIC, etc)

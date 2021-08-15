@@ -98,26 +98,6 @@ impl ReliableOrderedConnectionToTarget for TcpStream {
     }
 }
 
-
-#[async_trait]
-impl<T: ReliableOrderedConnectionToTarget> ReliableOrderedConnectionToTarget for &'_ T {
-    async fn send_to_peer(&self, input: &[u8]) -> std::io::Result<()> {
-        T::send_to_peer(self, input).await
-    }
-
-    async fn recv(&self) -> std::io::Result<Bytes> {
-        T::recv(self).await
-    }
-
-    fn local_addr(&self) -> std::io::Result<SocketAddr> {
-        T::local_addr(self)
-    }
-
-    fn peer_addr(&self) -> std::io::Result<SocketAddr> {
-        T::peer_addr(self)
-    }
-}
-
 #[async_trait]
 impl<T: ReliableOrderedConnectionToTarget> ReliableOrderedConnectionToTarget for Arc<T> {
     async fn send_to_peer(&self, input: &[u8]) -> std::io::Result<()> {
