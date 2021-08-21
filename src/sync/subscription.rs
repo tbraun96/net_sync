@@ -1,37 +1,41 @@
-use crate::reliable_conn::ReliableOrderedConnectionToTarget;
+use crate::reliable_conn::ReliableOrderedStreamToTarget;
 use crate::multiplex::{MultiplexedConnKey, MultiplexedPacket, MultiplexedConn};
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use parking_lot::RwLock;
 use std::collections::HashMap;
-use crate::sync::network_endpoint::{PostActionChannel, PreActionChannel, PreActionSync, PostActionSync};
+use crate::sync::network_application::{PostActionChannel, PreActionChannel, PreActionSync, PostActionSync};
 use crate::sync::RelativeNodeType;
 use bytes::Bytes;
-use std::net::SocketAddr;
 use async_trait::async_trait;
 
 #[async_trait]
 pub trait SubscriptionBiStream: Send + Sync {
-    type Conn: ReliableOrderedConnectionToTarget + 'static;
+    type Conn: ReliableOrderedStreamToTarget + 'static;
     type ID: MultiplexedConnKey;
 
     fn conn(&self) -> &Self::Conn;
     fn receiver(&self) -> &Mutex<UnboundedReceiver<Vec<u8>>>;
     fn id(&self) -> Self::ID;
     fn node_type(&self) -> RelativeNodeType;
+}
 
+#[async_trait]
+pub trait SubscriptionBiStreamExt: SubscriptionBiStream {
     /// Creates a new multiplexed level capable of obtaining more subscribers.
     /// Uses Self as a reliable ordered connection, while using NewId to identify the substreams in the created next level
-    async fn multiplex<NewID: MultiplexedConnKey + 'static>(self) -> Result<MultiplexedConn<Self, NewID>, anyhow::Error>
+    async fn multiplex<NewID: MultiplexedConnKey + 'static>(self) -> Result<MultiplexedConn<NewID>, anyhow::Error>
         where Self: Sized + 'static {
         MultiplexedConn::register(self.node_type(), self).await
     }
 }
 
+impl<T: SubscriptionBiStream> SubscriptionBiStreamExt for T {}
+
 #[async_trait::async_trait]
 pub trait Subscribable: Send + Sync + Sized {
     type ID: MultiplexedConnKey;
-    type UnderlyingConn: ReliableOrderedConnectionToTarget + 'static;
+    type UnderlyingConn: ReliableOrderedStreamToTarget + 'static;
     type SubscriptionType: SubscriptionBiStream;
     type BorrowedSubscriptionType<'a>: SubscriptionBiStream<ID=Self::ID, Conn=Self::UnderlyingConn> + Into<Self::SubscriptionType>;
 
@@ -56,7 +60,7 @@ pub trait Subscribable: Send + Sync + Sized {
 }
 
 #[async_trait]
-impl<R: SubscriptionBiStream> ReliableOrderedConnectionToTarget for R {
+impl<R: SubscriptionBiStream + ?Sized> ReliableOrderedStreamToTarget for R {
     async fn send_to_peer(&self, input: &[u8]) -> std::io::Result<()> {
         let packet = MultiplexedPacket::ApplicationLayer { id: self.id(), payload: input.to_vec() };
         self.conn().send_to_peer(&bincode2::serialize(&packet).unwrap()).await
@@ -64,14 +68,6 @@ impl<R: SubscriptionBiStream> ReliableOrderedConnectionToTarget for R {
 
     async fn recv(&self) -> std::io::Result<Bytes> {
         self.receiver().lock().await.recv().await.map(Bytes::from).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::ConnectionReset, "Receiver died"))
-    }
-
-    fn local_addr(&self) -> std::io::Result<SocketAddr> {
-        self.conn().local_addr()
-    }
-
-    fn peer_addr(&self) -> std::io::Result<SocketAddr> {
-        self.conn().peer_addr()
     }
 }
 

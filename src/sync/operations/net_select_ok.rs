@@ -1,7 +1,7 @@
 use serde::{Serialize, Deserialize};
 use futures::Future;
 use std::pin::Pin;
-use crate::reliable_conn::ReliableOrderedConnectionToTarget;
+use crate::reliable_conn::{ReliableOrderedStreamToTarget, ReliableOrderedStreamToTargetExt};
 use std::task::{Context, Poll};
 use tokio::sync::{Mutex, MutexGuard};
 use crate::sync::RelativeNodeType;
@@ -15,7 +15,7 @@ pub struct NetSelectOk<'a, R> {
 }
 
 impl<'a, R: Send + 'a> NetSelectOk<'a, R> {
-    pub fn new<S: Subscribable<ID=K, UnderlyingConn=Conn>, K: MultiplexedConnKey + 'a, Conn: ReliableOrderedConnectionToTarget + 'static, F: Send + 'a>(conn: &'a S, local_node_type: RelativeNodeType, future: F) -> Self
+    pub fn new<S: Subscribable<ID=K, UnderlyingConn=Conn>, K: MultiplexedConnKey + 'a, Conn: ReliableOrderedStreamToTarget + 'static, F: Send + 'a>(conn: &'a S, local_node_type: RelativeNodeType, future: F) -> Self
         where F: Future<Output=Result<R, anyhow::Error>> {
         Self { future: Box::pin(resolve(conn, local_node_type, future)) }
     }
@@ -76,7 +76,7 @@ impl<R> NetSelectOkResult<R> {
     }
 }
 
-async fn resolve<S: Subscribable<ID=K, UnderlyingConn=Conn>, K: MultiplexedConnKey, Conn: ReliableOrderedConnectionToTarget + 'static, F, R>(conn: &S, local_node_type: RelativeNodeType, future: F) -> Result<NetSelectOkResult<R>, anyhow::Error>
+async fn resolve<S: Subscribable<ID=K, UnderlyingConn=Conn>, K: MultiplexedConnKey, Conn: ReliableOrderedStreamToTarget + 'static, F, R>(conn: &S, local_node_type: RelativeNodeType, future: F) -> Result<NetSelectOkResult<R>, anyhow::Error>
     where F: Future<Output=Result<R, anyhow::Error>> {
     let ref conn = conn.initiate_subscription().await?;
     log::info!("NET_SELECT_OK started conv={:?} for {:?}", conn.id(), local_node_type);
@@ -96,7 +96,7 @@ async fn resolve<S: Subscribable<ID=K, UnderlyingConn=Conn>, K: MultiplexedConnK
     let evaluator = async move {
         let _stopper_tx = stopper_tx;
 
-        async fn return_sequence<Conn: ReliableOrderedConnectionToTarget, R>(conn: &Conn, new_state: State, mut state: MutexGuard<'_, LocalState<R>>, adjacent_success: bool) -> Result<(Option<Result<R, anyhow::Error>>, bool), anyhow::Error> {
+        async fn return_sequence<Conn: ReliableOrderedStreamToTarget, R>(conn: &Conn, new_state: State, mut state: MutexGuard<'_, LocalState<R>>, adjacent_success: bool) -> Result<(Option<Result<R, anyhow::Error>>, bool), anyhow::Error> {
             state.local_state = new_state.clone();
             conn.send_serialized(new_state.clone()).await?;
             //conn.recv_until_serialized(|s: &State| *s == State::NonPreferredFinished).await?;
@@ -234,10 +234,9 @@ fn wrap_return<R>(result: Option<Result<R, anyhow::Error>>, did_win: bool, other
 #[cfg(test)]
 mod tests {
     use std::future::Future;
-    use crate::reliable_conn::ReliableOrderedConnectionToTarget;
     use std::fmt::Debug;
     use std::time::Duration;
-    use crate::sync::network_endpoint::NetworkEndpoint;
+    use crate::sync::network_application::NetworkApplication;
     use crate::sync::test_utils::{deadlock_detector, create_streams};
 
     fn setup_log() {
@@ -283,7 +282,7 @@ mod tests {
     }
 
 
-    async fn inner<R: Send + Debug + 'static, Conn0: ReliableOrderedConnectionToTarget + 'static, Conn1: ReliableOrderedConnectionToTarget + 'static, F: Future<Output=Result<R, anyhow::Error>> + Send + 'static, Y: Future<Output=Result<R, anyhow::Error>> + Send + 'static>(conn0: NetworkEndpoint<Conn0>, conn1: NetworkEndpoint<Conn1>, fx_1: F, fx_2: Y) {
+    async fn inner<R: Send + Debug + 'static, F: Future<Output=Result<R, anyhow::Error>> + Send + 'static, Y: Future<Output=Result<R, anyhow::Error>> + Send + 'static>(conn0: NetworkApplication, conn1: NetworkApplication, fx_1: F, fx_2: Y) {
         let server = async move {
             let res = conn0.net_select_ok(fx_1).await.unwrap();
             log::info!("Server res: {:?}", res);

@@ -1,5 +1,5 @@
 
-use crate::reliable_conn::ReliableOrderedConnectionToTarget;
+use crate::reliable_conn::{ReliableOrderedStreamToTarget, ReliableOrderedStreamToTargetExt};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use parking_lot::RwLock;
@@ -12,7 +12,7 @@ use serde::{Serialize, Deserialize};
 use serde::de::DeserializeOwned;
 use std::fmt::Debug;
 use anyhow::Error;
-use crate::sync::network_endpoint::{PostActionChannel, PreActionChannel};
+use crate::sync::network_application::{PostActionChannel, PreActionChannel};
 use std::ops::Deref;
 use std::sync::atomic::{AtomicU64, Ordering};
 use async_trait::async_trait;
@@ -38,12 +38,12 @@ impl IDGen<SymmetricConvID> for SymmetricConvID {
     }
 }
 
-pub struct MultiplexedConn<T: ReliableOrderedConnectionToTarget, K: MultiplexedConnKey = SymmetricConvID> {
-    inner: Arc<MultiplexedConnInner<T, K>>
+pub struct MultiplexedConn<K: MultiplexedConnKey = SymmetricConvID> {
+    inner: Arc<MultiplexedConnInner<K>>
 }
 
-pub struct MultiplexedConnInner<T: ReliableOrderedConnectionToTarget, K: MultiplexedConnKey> {
-    pub(crate) conn: T,
+pub struct MultiplexedConnInner<K: MultiplexedConnKey> {
+    pub(crate) conn: Arc<dyn ReliableOrderedStreamToTarget>,
     subscribers: RwLock<HashMap<K, UnboundedSender<Vec<u8>>>>,
     pre_open_container: PreActionChannel<K>,
     post_close_container: PostActionChannel<K>,
@@ -51,8 +51,8 @@ pub struct MultiplexedConnInner<T: ReliableOrderedConnectionToTarget, K: Multipl
     node_type: RelativeNodeType
 }
 
-impl<T: ReliableOrderedConnectionToTarget, K: MultiplexedConnKey> Deref for MultiplexedConn<T, K> {
-    type Target = MultiplexedConnInner<T, K>;
+impl<K: MultiplexedConnKey> Deref for MultiplexedConn<K> {
+    type Target = MultiplexedConnInner<K>;
 
     fn deref(&self) -> &Self::Target {
         self.inner.deref()
@@ -68,26 +68,26 @@ pub(crate) enum MultiplexedPacket<K: MultiplexedConnKey> {
     Greeter
 }
 
-impl<T: ReliableOrderedConnectionToTarget, K: MultiplexedConnKey> MultiplexedConn<T, K> {
-    pub fn new(node_type: RelativeNodeType, conn: T) -> Self {
-        Self { inner: Arc::new(MultiplexedConnInner { conn, subscribers: RwLock::new(HashMap::new()), pre_open_container: PreActionChannel::new(), post_close_container: PostActionChannel::new(), id_gen: K::generate_container(), node_type })}
+impl<K: MultiplexedConnKey> MultiplexedConn<K> {
+    pub fn new<T: ReliableOrderedStreamToTarget + 'static>(node_type: RelativeNodeType, conn: T) -> Self {
+        Self { inner: Arc::new(MultiplexedConnInner { conn: Arc::new(conn), subscribers: RwLock::new(HashMap::new()), pre_open_container: PreActionChannel::new(), post_close_container: PostActionChannel::new(), id_gen: K::generate_container(), node_type })}
     }
 }
 
-impl<T: ReliableOrderedConnectionToTarget, K: MultiplexedConnKey> Clone for MultiplexedConn<T, K> {
+impl<K: MultiplexedConnKey> Clone for MultiplexedConn<K> {
     fn clone(&self) -> Self {
         Self { inner: self.inner.clone() }
     }
 }
 
-pub struct MultiplexedSubscription<'a, T: ReliableOrderedConnectionToTarget, K: MultiplexedConnKey = SymmetricConvID> {
-    ptr: &'a MultiplexedConn<T, K>,
+pub struct MultiplexedSubscription<'a, K: MultiplexedConnKey = SymmetricConvID> {
+    ptr: &'a MultiplexedConn<K>,
     receiver: Option<Mutex<UnboundedReceiver<Vec<u8>>>>,
     id: K
 }
 
-impl<T: ReliableOrderedConnectionToTarget + 'static, K: MultiplexedConnKey> SubscriptionBiStream for MultiplexedSubscription<'_, T, K> {
-    type Conn = T;
+impl<K: MultiplexedConnKey> SubscriptionBiStream for MultiplexedSubscription<'_, K> {
+    type Conn = Arc<dyn ReliableOrderedStreamToTarget + 'static>;
     type ID = K;
 
     fn conn(&self) -> &Self::Conn {
@@ -107,8 +107,8 @@ impl<T: ReliableOrderedConnectionToTarget + 'static, K: MultiplexedConnKey> Subs
     }
 }
 
-impl<T: ReliableOrderedConnectionToTarget + 'static, K: MultiplexedConnKey> From<MultiplexedSubscription<'_, T, K>> for OwnedMultiplexedSubscription<T, K> {
-    fn from(mut this: MultiplexedSubscription<'_, T, K>) -> Self {
+impl<K: MultiplexedConnKey> From<MultiplexedSubscription<'_, K>> for OwnedMultiplexedSubscription<K> {
+    fn from(mut this: MultiplexedSubscription<'_, K>) -> Self {
         let ret = Self {
             ptr: this.ptr.clone(),
             receiver: this.receiver.take().unwrap(),
@@ -121,14 +121,14 @@ impl<T: ReliableOrderedConnectionToTarget + 'static, K: MultiplexedConnKey> From
     }
 }
 
-pub struct OwnedMultiplexedSubscription<T: ReliableOrderedConnectionToTarget + 'static, K: MultiplexedConnKey + 'static = SymmetricConvID> {
-    ptr: MultiplexedConn<T, K>,
+pub struct OwnedMultiplexedSubscription<K: MultiplexedConnKey + 'static = SymmetricConvID> {
+    ptr: MultiplexedConn<K>,
     receiver: Mutex<UnboundedReceiver<Vec<u8>>>,
     id: K
 }
 
-impl<T: ReliableOrderedConnectionToTarget + 'static, K: MultiplexedConnKey> SubscriptionBiStream for OwnedMultiplexedSubscription<T, K> {
-    type Conn = T;
+impl<K: MultiplexedConnKey> SubscriptionBiStream for OwnedMultiplexedSubscription<K> {
+    type Conn = Arc<dyn ReliableOrderedStreamToTarget + 'static>;
     type ID = K;
 
     fn conn(&self) -> &Self::Conn {
@@ -149,11 +149,11 @@ impl<T: ReliableOrderedConnectionToTarget + 'static, K: MultiplexedConnKey> Subs
 }
 
 #[async_trait]
-impl<T: ReliableOrderedConnectionToTarget + 'static, K: MultiplexedConnKey + 'static> Subscribable for MultiplexedConn<T, K> {
+impl<K: MultiplexedConnKey + 'static> Subscribable for MultiplexedConn<K> {
     type ID = K;
-    type UnderlyingConn = T;
-    type SubscriptionType = OwnedMultiplexedSubscription<T, K>;
-    type BorrowedSubscriptionType<'a> = MultiplexedSubscription<'a, T, K>;
+    type UnderlyingConn = Arc<dyn ReliableOrderedStreamToTarget + 'static>;
+    type SubscriptionType = OwnedMultiplexedSubscription<K>;
+    type BorrowedSubscriptionType<'a> = MultiplexedSubscription<'a, K>;
 
     fn underlying_conn(&self) -> &Self::UnderlyingConn {
         &self.conn
@@ -204,7 +204,7 @@ impl<T: ReliableOrderedConnectionToTarget + 'static, K: MultiplexedConnKey + 'st
     }
 }
 
-impl<T: ReliableOrderedConnectionToTarget + 'static, K: MultiplexedConnKey + 'static> Drop for OwnedMultiplexedSubscription<T, K> {
+impl<K: MultiplexedConnKey + 'static> Drop for OwnedMultiplexedSubscription<K> {
     fn drop(&mut self) {
         close_sequence_for_multiplexed_bistream(self.id, self.ptr.clone())
     }
@@ -213,55 +213,44 @@ impl<T: ReliableOrderedConnectionToTarget + 'static, K: MultiplexedConnKey + 'st
 #[cfg(test)]
 mod tests {
     use crate::sync::test_utils::create_streams;
-    use crate::reliable_conn::ReliableOrderedConnectionToTarget;
-    use crate::sync::network_endpoint::NetworkEndpoint;
-    use crate::sync::subscription::{Subscribable, SubscriptionBiStream};
+    use crate::reliable_conn::ReliableOrderedStreamToTargetExt;
+    use crate::sync::network_application::NetworkApplication;
+    use crate::sync::subscription::{Subscribable, SubscriptionBiStreamExt};
     use serde::{Serialize, Deserialize};
     use crate::multiplex::OwnedMultiplexedSubscription;
     use crate::sync::SymmetricConvID;
+    use async_recursion::async_recursion;
 
     #[derive(Serialize, Deserialize)]
     struct Packet(usize);
 
-    // using recursion doesn't work, thus, we go 17 layers deep to simulate a 7-sigma use case scenario
     #[tokio::test]
     async fn nested_multiplexed_stream() {
 
         let (outer_stream_server, outer_stream_client) = create_streams().await;
-        let (server, client) = nested(0,outer_stream_server, outer_stream_client).await;
-        let (server, client) = nested(1,server, client).await;
-        let (server, client) = nested(2, server, client).await;
-        let (server, client) = nested(3, server, client).await;
-        let (server, client) = nested(4, server, client).await;
-        let (server, client) = nested(5, server, client).await;
-        let (server, client) = nested(6, server, client).await;
-        let (server, client) = nested(7, server, client).await;
-        let (server, client) = nested(8, server, client).await;
-        let (server, client) = nested(9, server, client).await;
-        let (server, client) = nested(10, server, client).await;
-        let (server, client) = nested(11, server, client).await;
-        let (server, client) = nested(12, server, client).await;
-        let (server, client) = nested(13, server, client).await;
-        let (server, client) = nested(14, server, client).await;
-        let (server, client) = nested(15, server, client).await;
-        let (_server, _client) = nested(16, server, client).await;
-
+        // 50 recursions deep ....
+        nested(0, 50, outer_stream_server, outer_stream_client).await;
     }
 
-    async fn nested<T: ReliableOrderedConnectionToTarget + 'static, R: ReliableOrderedConnectionToTarget + 'static>(idx: usize, server_stream: NetworkEndpoint<T>, client_stream: NetworkEndpoint<R>) -> (NetworkEndpoint<OwnedMultiplexedSubscription<T>>, NetworkEndpoint<OwnedMultiplexedSubscription<R>>){
+    #[async_recursion]
+    async fn nested(idx: usize, max: usize, server_stream: NetworkApplication, client_stream: NetworkApplication) -> (NetworkApplication, NetworkApplication) {
+        if idx == max {
+            return (server_stream, client_stream)
+        }
+
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
         let (server_stream0, client_stream0) = (server_stream.clone(), client_stream.clone());
 
         let server = tokio::spawn(async move {
             // get one substream from the input stream
-            let next_stream: OwnedMultiplexedSubscription<T> = server_stream.initiate_subscription().await.unwrap().into();
+            let next_stream: OwnedMultiplexedSubscription = server_stream.initiate_subscription().await.unwrap().into();
             next_stream.send_serialized(Packet(idx)).await.unwrap();
             rx.await.unwrap();
             next_stream.multiplex::<SymmetricConvID>().await.unwrap()
         });
 
         let client = tokio::spawn(async move {
-            let next_stream: OwnedMultiplexedSubscription<R> = client_stream.initiate_subscription().await.unwrap().into();
+            let next_stream: OwnedMultiplexedSubscription = client_stream.initiate_subscription().await.unwrap().into();
             let val = next_stream.recv_serialized::<Packet>().await.unwrap();
             assert_eq!(val.0, idx);
             tx.send(()).unwrap();
@@ -272,14 +261,14 @@ mod tests {
 
         let server1 = tokio::spawn(async move {
             // get one substream from the input stream
-            let next_stream: OwnedMultiplexedSubscription<T> = server_stream0.initiate_subscription().await.unwrap().into();
+            let next_stream: OwnedMultiplexedSubscription = server_stream0.initiate_subscription().await.unwrap().into();
             next_stream.send_serialized(Packet(idx+10)).await.unwrap();
             rx1.await.unwrap();
             next_stream.multiplex::<SymmetricConvID>().await.unwrap()
         });
 
         let client1 = tokio::spawn(async move {
-            let next_stream: OwnedMultiplexedSubscription<R> = client_stream0.initiate_subscription().await.unwrap().into();
+            let next_stream: OwnedMultiplexedSubscription = client_stream0.initiate_subscription().await.unwrap().into();
             let val = next_stream.recv_serialized::<Packet>().await.unwrap();
             assert_eq!(val.0, idx + 10);
             tx1.send(()).unwrap();
@@ -288,6 +277,6 @@ mod tests {
 
         let (next_server_stream, next_client_stream, _, _) = tokio::join!(server, client, server1, client1);
 
-        (next_server_stream.unwrap(), next_client_stream.unwrap())
+        return nested(idx+1, max,next_server_stream.unwrap(), next_client_stream.unwrap()).await
     }
 }

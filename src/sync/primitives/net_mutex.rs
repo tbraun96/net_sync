@@ -1,30 +1,26 @@
-use std::sync::Arc;
-
-use tokio::sync::{Mutex, OwnedMutexGuard};
-
-use crate::sync::subscription::Subscribable;
-use crate::reliable_conn::ReliableOrderedConnectionToTarget;
-use crate::sync::subscription::SubscriptionBiStream;
-use std::pin::Pin;
-use futures::Future;
 use std::ops::{Deref, DerefMut};
-use serde::{Serialize, Deserialize};
-use serde::de::DeserializeOwned;
+use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
-use crate::time_tracker::TimeTracker;
+
+use futures::Future;
+use serde::{Deserialize, Serialize};
+use tokio::sync::{Mutex, OwnedMutexGuard};
 use tokio::sync::mpsc::{Receiver, Sender};
+
+use crate::reliable_conn::ReliableOrderedStreamToTargetExt;
+use crate::sync::primitives::NetObject;
 use crate::sync::RelativeNodeType;
+use crate::sync::subscription::Subscribable;
+use crate::sync::subscription::SubscriptionBiStream;
+use crate::time_tracker::TimeTracker;
 
-pub trait NetMutexCompatible: Serialize + DeserializeOwned + Send + Sync + Clone + 'static {}
-impl<T: Serialize + DeserializeOwned + Send + Sync + Clone + 'static> NetMutexCompatible for T {}
-
-//type InnerChannel<S> = <MultiplexedConn<<S as Subscribable>::SubscriptionType> as Subscribable>::SubscriptionType;
-type InnerChannel<S> = <S as Subscribable>::SubscriptionType;
+pub(crate) type InnerChannel<S> = <S as Subscribable>::SubscriptionType;
 
 type InnerState<T> = (T, Sender<()>);
 type OwnedLocalLock<T> = OwnedMutexGuard<InnerState<T>>;
 
-pub struct NetMutex<T: NetMutexCompatible, S: Subscribable + 'static> {
+pub struct NetMutex<T: NetObject, S: Subscribable + 'static> {
     app: Arc<InnerChannel<S>>,
     // contains the background_to_active_rx
     shared_state: Arc<Mutex<InnerState<T>>>,
@@ -64,8 +60,8 @@ impl<T> Drop for LocalLockHolder<T> {
     }
 }
 
-impl<S: Subscribable + 'static, T: NetMutexCompatible> NetMutex<T, S> {
-    async fn new_internal(conn: <S as Subscribable>::SubscriptionType, t: T) -> Result<Self, anyhow::Error> {
+impl<S: Subscribable + 'static, T: NetObject> NetMutex<T, S> {
+    async fn new_internal(conn: InnerChannel<S>, t: T) -> Result<Self, anyhow::Error> {
         // create a channel to listen here for incoming messages and alter the local state as needed
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
         let (active_to_bg_tx, active_to_bg_rx) = tokio::sync::mpsc::channel::<()>(1);
@@ -83,13 +79,12 @@ impl<S: Subscribable + 'static, T: NetMutexCompatible> NetMutex<T, S> {
             log::info!("[NetMutex] Passive background handler ending")
         });
 
-        // this node must also have the ability to listen to inbound requests while not attempting to gain access to a mutex
         Ok(this)
     }
 
     pub fn new<'a>(app: &'a S, value: Option<T>) -> NetMutexLoader<'a, T, S>
         where T: 'a {
-        NetMutexLoader::<T, S> { future: Box::pin(net_mutex_loader(app, value)) }
+        NetMutexLoader::<T, S> { future: Box::pin(sync_establish_init(app, value, Self::new_internal)) }
     }
 
     /// Returns a future which resolves once the lock can be established with the network
@@ -102,7 +97,7 @@ impl<S: Subscribable + 'static, T: NetMutexCompatible> NetMutex<T, S> {
     }
 }
 
-impl<T: NetMutexCompatible, S: Subscribable + 'static> Drop for NetMutex<T, S> {
+impl<T: NetObject, S: Subscribable + 'static> Drop for NetMutex<T, S> {
     fn drop(&mut self) {
         let conn = self.app.clone();
         let stop_tx = self.stop_tx.take().unwrap();
@@ -116,12 +111,12 @@ impl<T: NetMutexCompatible, S: Subscribable + 'static> Drop for NetMutex<T, S> {
     }
 }
 
-pub struct NetMutexGuard<T: NetMutexCompatible + 'static, S: Subscribable + 'static> {
+pub struct NetMutexGuard<T: NetObject + 'static, S: Subscribable + 'static> {
     conn: Arc<InnerChannel<S>>,
     guard: Option<LocalLockHolder<T>>
 }
 
-impl<T: NetMutexCompatible, S: Subscribable> Deref for NetMutexGuard<T, S> {
+impl<T: NetObject, S: Subscribable> Deref for NetMutexGuard<T, S> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -129,13 +124,13 @@ impl<T: NetMutexCompatible, S: Subscribable> Deref for NetMutexGuard<T, S> {
     }
 }
 
-impl<T: NetMutexCompatible, S: Subscribable> DerefMut for NetMutexGuard<T, S> {
+impl<T: NetObject, S: Subscribable> DerefMut for NetMutexGuard<T, S> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.guard.as_mut().unwrap().0.as_mut().unwrap().0
     }
 }
 
-impl<T: NetMutexCompatible + 'static, S: Subscribable> Drop for NetMutexGuard<T, S> {
+impl<T: NetObject + 'static, S: Subscribable> Drop for NetMutexGuard<T, S> {
     fn drop(&mut self) {
         let guard = self.guard.take().unwrap();
         let app = self.conn.clone();
@@ -149,11 +144,11 @@ impl<T: NetMutexCompatible + 'static, S: Subscribable> Drop for NetMutexGuard<T,
     }
 }
 
-pub struct NetMutexLoader<'a, T: NetMutexCompatible, S: Subscribable + 'static> {
+pub struct NetMutexLoader<'a, T: NetObject, S: Subscribable + 'static> {
     future: Pin<Box<dyn Future<Output=Result<NetMutex<T, S>, anyhow::Error>> + Send + 'a>>
 }
 
-impl<T: NetMutexCompatible, S: Subscribable + 'static> Future for NetMutexLoader<'_, T, S> {
+impl<T: NetObject, S: Subscribable + 'static> Future for NetMutexLoader<'_, T, S> {
     type Output = Result<NetMutex<T, S>, anyhow::Error>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -168,7 +163,10 @@ enum LoaderPacket<T> {
     SynAck
 }
 
-async fn net_mutex_loader<T: NetMutexCompatible, S: Subscribable + 'static>(app: &S, local_value: Option<T>) -> Result<NetMutex<T, S>, anyhow::Error> {
+pub(crate) async fn sync_establish_init<T: NetObject, S: Subscribable + 'static, Fx, F, O>(app: &S, local_value: Option<T>, fx: Fx) -> Result<O, anyhow::Error>
+    where
+        Fx: FnOnce(InnerChannel<S>, T) -> F,
+        F: Future<Output=Result<O, anyhow::Error>> {
     let conn = app.initiate_subscription().await?;
     conn.send_serialized(LoaderPacket::Syn(local_value.clone())).await?;
     let packet = conn.recv_serialized::<LoaderPacket<T>>().await?;
@@ -179,13 +177,13 @@ async fn net_mutex_loader<T: NetMutexCompatible, S: Subscribable + 'static>(app:
                 (Some(remote_value), None) => {
                     conn.send_serialized(LoaderPacket::<T>::SynAck).await?;
                     let _ = conn.recv_serialized::<LoaderPacket<T>>().await?;
-                    NetMutex::new_internal(conn.into(), remote_value).await
+                    (fx)(conn.into(), remote_value).await
                 }
 
                 (None, Some(local_value)) => {
                     let _ = conn.recv_serialized::<LoaderPacket<T>>().await?;
                     conn.send_serialized(LoaderPacket::<T>::SynAck).await?;
-                    NetMutex::new_internal(conn.into(), local_value).await
+                    (fx)(conn.into(), local_value).await
                 }
 
                 _ => {
@@ -206,7 +204,7 @@ struct NetMutexGuardDropCode {
 }
 
 impl NetMutexGuardDropCode {
-    fn new<T: NetMutexCompatible + 'static, S: Subscribable + 'static>(conn: Arc<InnerChannel<S>>, guard: LocalLockHolder<T>) -> Self {
+    fn new<T: NetObject + 'static, S: Subscribable + 'static>(conn: Arc<InnerChannel<S>>, guard: LocalLockHolder<T>) -> Self {
         Self { future: Box::pin(net_mutex_drop_code::<T, S>(conn, guard)) }
     }
 }
@@ -219,7 +217,7 @@ impl Future for NetMutexGuardDropCode {
     }
 }
 
-async fn net_mutex_drop_code<T: NetMutexCompatible, S: Subscribable + 'static>(conn: Arc<InnerChannel<S>>, lock: LocalLockHolder<T>) -> Result<(), anyhow::Error> {
+async fn net_mutex_drop_code<T: NetObject, S: Subscribable + 'static>(conn: Arc<InnerChannel<S>>, lock: LocalLockHolder<T>) -> Result<(), anyhow::Error> {
     log::info!("[NetMutex] Drop code initialized for {:?}...", conn.node_type());
     conn.send_serialized(UpdatePacket::Released(bincode2::serialize(&lock.deref().0)?)).await?;
 
@@ -252,7 +250,7 @@ async fn net_mutex_drop_code<T: NetMutexCompatible, S: Subscribable + 'static>(c
 }
 
 /// Releases the lock with the adjacent endpoint, updating the value too for the adjacent node
-pub struct NetMutexGuardAcquirer<'a, T: NetMutexCompatible + 'static, S: Subscribable + 'static> {
+pub struct NetMutexGuardAcquirer<'a, T: NetObject + 'static, S: Subscribable + 'static> {
     future: Pin<Box<dyn Future<Output=Result<NetMutexGuard<T, S>, anyhow::Error>> + Send + 'a>>
 }
 
@@ -265,13 +263,13 @@ enum UpdatePacket {
     ReleasedVerified
 }
 
-impl<'a, T: NetMutexCompatible, S: Subscribable> NetMutexGuardAcquirer<'a, T, S> {
+impl<'a, T: NetObject, S: Subscribable> NetMutexGuardAcquirer<'a, T, S> {
     fn new(mutex: &'a NetMutex<T, S>) -> Self {
         Self { future: Box::pin(net_mutex_guard_acquirer(mutex)) }
     }
 }
 
-impl<T: NetMutexCompatible + 'static, S: Subscribable + 'static> Future for NetMutexGuardAcquirer<'_, T, S> {
+impl<T: NetObject + 'static, S: Subscribable + 'static> Future for NetMutexGuardAcquirer<'_, T, S> {
     type Output = Result<NetMutexGuard<T, S>, anyhow::Error>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -279,7 +277,7 @@ impl<T: NetMutexCompatible + 'static, S: Subscribable + 'static> Future for NetM
     }
 }
 
-async fn net_mutex_guard_acquirer<T: NetMutexCompatible + 'static, S: Subscribable>(mutex: &NetMutex<T, S>) -> Result<NetMutexGuard<T, S>, anyhow::Error> {
+async fn net_mutex_guard_acquirer<T: NetObject + 'static, S: Subscribable>(mutex: &NetMutex<T, S>) -> Result<NetMutexGuard<T, S>, anyhow::Error> {
     // first step is always to acquire the local lock. If local has a NetMutexGuard, then it will hold an owned lock until it drops, ensuring no local process can progress past this point
     // until after the lock is dropped. Further, the lock ensures the drop process is complete and that both nodes have a symmetric value
     log::info!("Attempting to acquire lock for {:?}", mutex.node_type());
@@ -337,14 +335,14 @@ async fn net_mutex_guard_acquirer<T: NetMutexCompatible + 'static, S: Subscribab
             }
 
             UpdatePacket::ReleasedVerified => {
-                panic!("RELEASED_VERIFIED should only be received by the drop_lock subroutine")
+                unreachable!("RELEASED_VERIFIED should only be received by the drop_lock subroutine")
             }
         }
     }
 }
 
 // the local lock will be dropped after this function, allowing local calls to acquire the lock once again
-async fn yield_lock<S: Subscribable + 'static, T: NetMutexCompatible>(channel: &Arc<InnerChannel<S>>, mut lock: LocalLockHolder<T>) -> Result<LocalLockHolder<T>, anyhow::Error> {
+async fn yield_lock<S: Subscribable + 'static, T: NetObject>(channel: &Arc<InnerChannel<S>>, mut lock: LocalLockHolder<T>) -> Result<LocalLockHolder<T>, anyhow::Error> {
     channel.send_serialized(UpdatePacket::Released(bincode2::serialize(&lock.deref().0).unwrap())).await?;
 
     loop {
@@ -372,13 +370,10 @@ async fn yield_lock<S: Subscribable + 'static, T: NetMutexCompatible>(channel: &
 }
 
 /// - background_to_active_tx: only gets sent if the other end is listening
-async fn passive_background_handler<S: Subscribable + 'static, T: NetMutexCompatible>(channel: Arc<InnerChannel<S>>, shared_state: Arc<Mutex<InnerState<T>>>, stop_rx: tokio::sync::oneshot::Receiver<()>, mut active_to_background_rx: Receiver<()>) -> Result<(), anyhow::Error> {
+async fn passive_background_handler<S: Subscribable + 'static, T: NetObject>(channel: Arc<InnerChannel<S>>, shared_state: Arc<Mutex<InnerState<T>>>, stop_rx: tokio::sync::oneshot::Receiver<()>, mut active_to_background_rx: Receiver<()>) -> Result<(), anyhow::Error> {
     let background_task = async move {
         // first, check to see if the other end is listening
         'outer_loop: loop {
-            //log::info!("Background for {:?} listening ...", channel.node_type());
-            //let packet = channel.recv_serialized::<UpdatePacket>().await?;
-            // if local is not actively engaged, then the lock will be available to take
             match shared_state.clone().try_lock_owned() {
                 Ok(lock) => {
                     // here, any local requests will be blocked until an external packet gets received OR local signals background to stop;
@@ -425,9 +420,10 @@ async fn passive_background_handler<S: Subscribable + 'static, T: NetMutexCompat
 
 #[cfg(test)]
 mod tests {
-    use crate::sync::test_utils::create_streams;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    use crate::sync::test_utils::create_streams;
 
     fn setup_log() {
         std::env::set_var("RUST_LOG", "error,warn");

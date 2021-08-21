@@ -1,6 +1,6 @@
 use std::pin::Pin;
 use std::future::Future;
-use crate::reliable_conn::ReliableOrderedConnectionToTarget;
+use crate::reliable_conn::ReliableOrderedStreamToTarget;
 use std::task::{Context, Poll};
 use crate::sync::operations::net_try_join::NetTryJoin;
 use crate::sync::RelativeNodeType;
@@ -14,7 +14,7 @@ pub struct NetJoin<'a, T> {
 }
 
 impl<'a, T: Send + 'a> NetJoin<'a, T> {
-    pub fn new<S: Subscribable<ID=K, UnderlyingConn=Conn>, K: MultiplexedConnKey + 'a, Conn: ReliableOrderedConnectionToTarget + 'static, F: Send + 'a>(conn: &'a S, local_node_type: RelativeNodeType, future: F) -> Self
+    pub fn new<S: Subscribable<ID=K, UnderlyingConn=Conn>, K: MultiplexedConnKey + 'a, Conn: ReliableOrderedStreamToTarget + 'static, F: Send + 'a>(conn: &'a S, local_node_type: RelativeNodeType, future: F) -> Self
         where F: Future<Output=T> {
         // we can safely unwrap since we are wrapping the result in an Ok()
         Self { future: Box::pin(NetTryJoin::<T, ()>::new(conn, local_node_type, future.map(Ok)).map_ok(|r| NetJoinResult { value: r.value.map(|r| r.unwrap()) })) }

@@ -1,6 +1,6 @@
 use std::pin::Pin;
 use std::future::Future;
-use crate::reliable_conn::ReliableOrderedConnectionToTarget;
+use crate::reliable_conn::ReliableOrderedStreamToTarget;
 use crate::sync::operations::net_select_ok::NetSelectOk;
 use futures::{TryFutureExt, FutureExt};
 use std::task::{Context, Poll};
@@ -14,7 +14,7 @@ pub struct NetSelect<'a, R> {
 }
 
 impl<'a, R: Send + 'a> NetSelect<'a, R> {
-    pub fn new<S: Subscribable<ID=K, UnderlyingConn=Conn>, K: MultiplexedConnKey + 'a, Conn: ReliableOrderedConnectionToTarget + 'static, F: Send + 'a>(conn: &'a S, local_node_type: RelativeNodeType, future: F) -> Self
+    pub fn new<S: Subscribable<ID=K, UnderlyingConn=Conn>, K: MultiplexedConnKey + 'a, Conn: ReliableOrderedStreamToTarget + 'static, F: Send + 'a>(conn: &'a S, local_node_type: RelativeNodeType, future: F) -> Self
         where F: Future<Output=R> {
         Self { future: Box::pin(NetSelectOk::new(conn, local_node_type, future.map(Ok)).map_ok(|r| NetSelectResult { value: r.result })) }
     }
