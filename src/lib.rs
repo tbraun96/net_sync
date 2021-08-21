@@ -1,4 +1,3 @@
-#![feature(allocator_api)]
 #![feature(generic_associated_types)]
 #![forbid(unsafe_code)]
 
