@@ -19,6 +19,7 @@ use crate::sync::primitives::NetObject;
 use crate::sync::subscription::Subscribable;
 use crate::sync::sync_start::NetSyncStart;
 use crate::sync::primitives::net_rwlock::{NetRwLockLoader, NetRwLock};
+use crate::sync::channel::bi_channel;
 
 pub type NetworkApplication = MultiplexedConn<SymmetricConvID>;
 
@@ -182,6 +183,11 @@ impl<K: MultiplexedConnKey + 'static> MultiplexedConn<K> {
     /// Creates a RwLock with an adjacent node on the network. One node must set the initial value, the other must set None
     pub fn rwlock<R: NetObject + 'static>(&self, value: Option<R>) -> NetRwLockLoader<R, Self> {
         NetRwLock::new(self, value)
+    }
+
+    /// Creates a bidirectional channel between two endpoints
+    pub fn bi_channel<R: NetObject>(&self) -> bi_channel::ChannelLoader<R, Self> {
+        bi_channel::Channel::new(self)
     }
 }
 
