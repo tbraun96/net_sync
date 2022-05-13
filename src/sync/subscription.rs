@@ -1,7 +1,7 @@
 use crate::reliable_conn::ReliableOrderedStreamToTarget;
-use crate::multiplex::{MultiplexedConnKey, MultiplexedPacket, MultiplexedConn};
+use crate::multiplex::{MultiplexedConnKey, MultiplexedPacket, MultiplexedConn, MemorySender};
 use tokio::sync::Mutex;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::UnboundedReceiver;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use crate::sync::network_application::{PostActionChannel, PreActionChannel, PreActionSync, PostActionSync};
@@ -37,10 +37,11 @@ pub trait Subscribable: Send + Sync + Sized {
     type ID: MultiplexedConnKey;
     type UnderlyingConn: ReliableOrderedStreamToTarget + 'static;
     type SubscriptionType: SubscriptionBiStream;
-    type BorrowedSubscriptionType<'a>: SubscriptionBiStream<ID=Self::ID, Conn=Self::UnderlyingConn> + Into<Self::SubscriptionType>;
+    type BorrowedSubscriptionType: SubscriptionBiStream<ID=Self::ID, Conn=Self::UnderlyingConn> + Into<Self::SubscriptionType>;
+    // TODO on stabalization of GATs: type BorrowedSubscriptionType<'a>: SubscriptionBiStream<ID=Self::ID, Conn=Self::UnderlyingConn> + Into<Self::SubscriptionType>;
 
     fn underlying_conn(&self) -> &Self::UnderlyingConn;
-    fn subscriptions(&self) -> &RwLock<HashMap<Self::ID, UnboundedSender<Vec<u8>>>>;
+    fn subscriptions(&self) -> &RwLock<HashMap<Self::ID, MemorySender>>;
     fn post_close_container(&self) -> &PostActionChannel<Self::ID>;
     fn pre_action_container(&self) -> &PreActionChannel<Self::ID>;
 
@@ -54,7 +55,8 @@ pub trait Subscribable: Send + Sync + Sized {
         PreActionSync::new(self)
     }
 
-    fn subscribe(&self, id: Self::ID) -> Self::BorrowedSubscriptionType<'_>;
+    fn get_next_prereserved(&self) -> Option<Self::BorrowedSubscriptionType>;
+    fn subscribe(&self, id: Self::ID) -> Self::BorrowedSubscriptionType;
     fn owned_subscription(&self, id: Self::ID) -> Self::SubscriptionType;
     fn get_next_id(&self) -> Self::ID;
 }

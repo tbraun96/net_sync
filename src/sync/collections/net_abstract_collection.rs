@@ -1,4 +1,5 @@
-/*use std::sync::Arc;
+#![allow(dead_code)]
+use std::sync::Arc;
 use crate::sync::primitives::NetObject;
 use crate::sync::subscription::Subscribable;
 use crate::sync::collections::net_abstract_collection::loader::NetVecLoader;
@@ -16,7 +17,7 @@ use crate::sync::primitives::net_rwlock::NetRwLock;
 type OwnedGlobalModifyElementLock<T, S> = Arc<NetRwLockReadGuard<T, S>>;
 type OwnedGlobalAlterVecLock<T, S> = NetRwLockWriteGuard<T, S>;
 
-#[allow(unused_variables)]
+
 pub struct NetAbstractCollection<T: NetObject, K, C: AbstractCollection<K, NetRwLock<T, S>>, S: Subscribable + 'static> {
     /// Adding/removing elements to the vector requires a write lock to global
     ///
@@ -43,13 +44,13 @@ impl<T: NetObject, K, C: AbstractCollection<K, NetRwLock<T, S>>, S: Subscribable
                     Channel::<T, S>::new(conn).await
                 };
 
-                let global_rwlock = async move {
+                let global_mutex = async move {
                     NetMutex::<u64, S>::new(conn, if conn.node_type() == RelativeNodeType::Initiator { Some(0) } else { None }).await
                 };
 
                 // TODO: make this operation concurrent ... will require adding unique ids ontop of symmetric IDs though
                 let update_channel = update_channel.await?;
-                let global = global_rwlock.await?;
+                let global = global_mutex.await?;
 
                 Ok(Self { global, inner: Arc::new(RwLock::new(C::default())), local_version: Arc::new(AtomicU64::new(0)), update_channel, _pd: Default::default() })
             })
@@ -88,4 +89,4 @@ mod locks {
     pub(crate) struct OwnedVecAlterLock<T: NetObject, S: Subscribable + 'static> {
 
     }
-}*/*/
+}*/

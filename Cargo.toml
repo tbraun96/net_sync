@@ -8,8 +8,10 @@ edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+
 [dependencies]
-tokio = { version = "1.10.0", features = ["net", "macros", "rt", "time", "io-util", "parking_lot"] }
+tokio = { version = "1.10.1", features = ["net", "macros", "rt", "time", "io-util", "parking_lot"] }
 futures = "0.3.16"
 bytes = "1.0.1"
 async-trait = "0.1.51"
@@ -27,3 +29,6 @@ log = { version = "0.4.8", features = ["std", "max_level_info", "release_max_lev
 parking_lot = { version = "0.11.1", features = ["deadlock_detection"] }
 async-recursion = "0.3.2"
 env_logger = "0.7.1"
+
+[lib]
+doctest = false

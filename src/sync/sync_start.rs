@@ -89,7 +89,7 @@ impl<P: Send + Sync> SyncPacket<P> {
     fn timestamp(self) -> Result<i64, anyhow::Error> {
         match self {
             Self::Ack(ts) => Ok(ts),
-            _ => Err(anyhow::Error::msg("Payload not attched (sync time)"))
+            _ => Err(anyhow::Error::msg("Payload not attached (sync time)"))
         }
     }
 }
@@ -101,7 +101,7 @@ async fn synchronize<S: Subscribable<ID=K, UnderlyingConn=Conn>, K: MultiplexedC
         Fx: FnOnce(P) -> F,
         Fx: Send {
 
-    let ref conn = conn.initiate_subscription().await?;
+    let conn = &(conn.initiate_subscription().await?);
     let tt = TimeTracker::new();
 
     match relative_node_type {

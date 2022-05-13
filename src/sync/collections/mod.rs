@@ -1,4 +1,4 @@
-/*use std::collections::HashMap;
+use std::collections::HashMap;
 use anyhow::Error;
 use std::hash::Hash;
 use crate::sync::collections::net_abstract_collection::NetAbstractCollection;
@@ -76,4 +76,4 @@ impl<K: Eq + Hash, V> AbstractCollection<K, V> for HashMap<K, V> {
     fn len(&self) -> usize {
         HashMap::len(self)
     }
-}*/
+}

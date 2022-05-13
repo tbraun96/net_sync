@@ -1,4 +1,4 @@
-#![feature(generic_associated_types)]
+
 #![forbid(unsafe_code)]
 
 pub mod sync;
